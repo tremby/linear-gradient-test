@@ -22,7 +22,7 @@ const ProductChart = () => {
 
   return (
     <Container
-      fluid={['linear-gradient(to bottom, rgba(255, 180, 180) 0 25%, rgba(255, 180, 180, 0.5))', backgroundFluid]}
+      fluid={['linear-gradient(to bottom, pink, transparent)', backgroundFluid]}
       backgroundColor={'#cccccc'}
     >
       <p>This should have an image background overlaid with a gradient, so it should be pink at the top.</p>
