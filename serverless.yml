@@ -1,0 +1,144 @@
+service: agi-suretrack-microsite
+
+plugins:
+  - serverless-s3-sync
+
+package:
+  exclude:
+    - ./*
+    - ./**
+    - '!node_modules/**'
+  include:
+    - backend/**
+
+provider:
+  name: aws
+  stage: ${opt:stage,"dev"}
+  region: ${file(./.cache/s3.config.json):region, env:AWS_ORIGIN_REGION}
+  endpointType: regional
+  runtime: nodejs10.x
+
+custom:
+  frontendBucketName: ${file(./.cache/s3.config.json):bucketName, env:AWS_ORIGIN_S3_BUCKET}
+  videoBucketName: ${self:service}-video-${self:provider.stage}
+  s3Sync:
+  - bucketName: ${self:custom.frontendBucketName}
+    localDir: public
+    acl: public-read
+    defaultContentType: text/html
+    params: ${file(./.cache/s3.params.json)}
+  certificates:
+    dev: arn:aws:acm:us-east-1:692173888566:certificate/52d5b1a0-41c1-4aee-b9ab-86be0acb540f
+    staging: arn:aws:acm:us-east-1:692173888566:certificate/52d5b1a0-41c1-4aee-b9ab-86be0acb540f
+    production: arn:aws:acm:us-east-1:692173888566:certificate/52d5b1a0-41c1-4aee-b9ab-86be0acb540f
+
+resources:
+  Resources:
+    FrontendBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.frontendBucketName}
+        AccessControl: PublicRead
+        WebsiteConfiguration:
+          IndexDocument: index.html
+          ErrorDocument: 404.html
+          RoutingRules: ${file(./.cache/s3.sls.routingRules.json)}
+    VideoBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.videoBucketName}
+    VideoBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket:
+          Ref: VideoBucket
+        PolicyDocument:
+          Statement:
+            - Sid: PublicReadGetObject
+              Effect: Allow
+              Principal:
+                AWS: { "Fn::Join" : [" ", ["arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity", { Ref: videoAccessIdentity } ] ] }
+              Action:
+                - s3:GetObject
+              Resource: arn:aws:s3:::${self:custom.videoBucketName}/*
+    SiteCloudFrontDistribution:
+      Type: AWS::CloudFront::Distribution
+      Properties:
+        DistributionConfig:
+          Enabled: true
+          IPV6Enabled: true
+          HttpVersion: http2
+          PriceClass: 'PriceClass_100'
+          Aliases:
+          - ${self:custom.frontendBucketName}
+          CustomErrorResponses:
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          ViewerCertificate:
+            SslSupportMethod: sni-only
+            AcmCertificateArn: ${self:custom.certificates.${self:provider.stage}}
+          DefaultCacheBehavior:
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            TargetOriginId: Frontend
+            Compress: true
+            ForwardedValues:
+              Headers:
+                - "Accept"
+                - "Authorization"
+                - "Origin"
+              QueryString: true
+              Cookies:
+                Forward: none
+            ViewerProtocolPolicy: redirect-to-https
+            MinTTL: 60
+            MaxTTL: 60
+            DefaultTTL: 60
+          CacheBehaviors:
+            - PathPattern: /video/*
+              AllowedMethods:
+                - GET
+                - HEAD
+                - OPTIONS
+              TargetOriginId: VideoBucket
+              ViewerProtocolPolicy: redirect-to-https
+              ForwardedValues:
+                Headers:
+                  - "Accept"
+                  - "Authorization"
+                  - "Origin"
+                QueryString: false
+                Cookies:
+                  Forward: none
+              MinTTL: 60
+              MaxTTL: 60
+              DefaultTTL: 60
+          Origins:
+            - DomainName: ${self:custom.frontendBucketName}.s3-website.${self:provider.region}.amazonaws.com
+              Id: Frontend
+              CustomOriginConfig:
+                HTTPPort: 80
+                HTTPSPort: 443
+                OriginProtocolPolicy: http-only
+            - DomainName: ${self:custom.videoBucketName}.s3.amazonaws.com
+              Id: VideoBucket
+              S3OriginConfig:
+                OriginAccessIdentity:
+                  Fn::Join:
+                    - ""
+                    - - 'origin-access-identity/cloudfront/'
+                      - Ref: videoAccessIdentity
+
+    videoAccessIdentity:
+      Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+      Properties:
+        CloudFrontOriginAccessIdentityConfig:
+          Comment: "Video Assets bucket"
+
+  Outputs:
+    SiteCloudFrontDistributionOutput:
+      Value:
+        'Fn::GetAtt': [ SiteCloudFrontDistribution, DomainName ]
